@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#6b9e77">
+  <title>本草画册 · 学生端</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M27 5C13 5 6 13 6 24c0 1 .1 2 .2 2.8C7 27 8 27 9 27c11 0 18-9 18-22z' fill='%236b9e77'/%3E%3Cpath d='M8 26C13 18 19 12 25 8' stroke='%23fff' stroke-width='1.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body data-app="student">
+
+  <!-- 学生端 -->
+  <section id="view-student" class="view">
+    <header class="topbar">
+      <div class="brand">
+        <svg viewBox="0 0 32 32" width="26" height="26"><path d="M27 5C13 5 6 13 6 24c0 1 .1 2 .2 2.8C7 27 8 27 9 27c11 0 18-9 18-22z" fill="#6b9e77"/><path d="M8 26C13 18 19 12 25 8" stroke="#fff" stroke-width="1.4" fill="none" stroke-linecap="round"/></svg>
+        <span>本草画册 · 学生端</span>
+      </div>
+      <div class="topbar-right">
+        <span id="student-name-label" class="name-label"></span>
+        <a class="link-btn" href="index.html">返回首页</a>
+      </div>
+    </header>
+
+    <div class="tabs">
+      <button class="tab active" data-stab="submit">作业提交</button>
+      <button class="tab" data-stab="records">我的记录</button>
+    </div>
+
+    <main class="container">
+      <!-- 作业提交 -->
+      <div id="stab-submit" class="stab">
+        <div class="card">
+          <h2 class="card-title">本次作业：本草画册内页设计</h2>
+          <div class="requirement">
+            <p>完成一页<b>本草画册内页</b>，需包含三部分内容：</p>
+            <ol class="req-list">
+              <li><b>本草植物写生绘画</b>：用线描勾出植物外形，再以淡彩上色；</li>
+              <li><b>本草文字介绍</b>：标注中草药名称，简介功效等知识；</li>
+              <li><b>图文版面排版</b>：绘画为主体，文字位置合理，版面干净美观。</li>
+            </ol>
+            <div class="weight-row">
+              <span>写生造型 <b>30%</b></span>
+              <span>线描色彩 <b>20%</b></span>
+              <span>排版构图 <b>20%</b></span>
+              <span>知识文本 <b>15%</b></span>
+              <span>完整创意 <b>15%</b></span>
+            </div>
+            <details class="rubric-details">
+              <summary>查看完整评价标准（四级）</summary>
+              <div class="rubric-table" id="rubric-table"></div>
+            </details>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title">上传我的作品</h2>
+          <p class="card-hint">每次提交 1 张本草画册内页照片，可直接拍照或从相册选择。</p>
+
+          <div id="upload-empty" class="upload-zone">
+            <svg viewBox="0 0 24 24" width="40" height="40"><rect x="3" y="6" width="18" height="13" rx="2" fill="none" stroke="#8aa890" stroke-width="1.5"/><circle cx="8.5" cy="10.5" r="1.5" fill="none" stroke="#8aa890" stroke-width="1.5"/><path d="M4 17l4.5-4 3.5 3 3-2.5L20 17" fill="none" stroke="#8aa890" stroke-width="1.5" stroke-linejoin="round"/></svg>
+            <span>请上传本草画册内页照片</span>
+          </div>
+          <div id="upload-preview" class="upload-preview hidden">
+            <img id="preview-img" alt="作品预览">
+            <button id="remove-img" class="link-btn danger">重新选择</button>
+          </div>
+
+          <div class="upload-actions">
+            <button id="btn-camera" class="btn btn-outline">
+              <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1V9a1 1 0 011-1z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="13" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+              拍照上传
+            </button>
+            <button id="btn-album" class="btn btn-outline">
+              <svg viewBox="0 0 24 24" width="18" height="18"><rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 9h.01M4 16l5-4 4 3 3-2.5 4 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              从相册选择
+            </button>
+            <input type="file" id="input-camera" accept="image/*" capture="environment" class="hidden">
+            <input type="file" id="input-album" accept="image/*" class="hidden">
+          </div>
+
+          <button id="btn-submit" class="btn btn-primary btn-block" disabled>提交作业，等待点评</button>
+        </div>
+      </div>
+
+      <!-- 我的记录 -->
+      <div id="stab-records" class="stab hidden">
+        <div id="student-records-list"></div>
+      </div>
+    </main>
+  </section>
+
+  <!-- 学生姓名弹窗 -->
+  <div id="modal-name" class="modal-mask hidden">
+    <div class="modal">
+      <h3>请输入你的姓名</h3>
+      <p class="modal-hint">姓名将随作业一起提交给老师</p>
+      <input type="text" id="input-name" class="text-input" placeholder="例如：李小草" maxlength="12">
+      <div class="modal-actions">
+        <button id="btn-name-ok" class="btn btn-primary">进入学生端</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 图片轻提示 -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="js/storage.js?v=9"></script>
+  <script src="js/ai.js?v=9"></script>
+  <script src="js/app.js?v=9"></script>
+</body>
+</html>

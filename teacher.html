@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#6b9e77">
+  <title>本草画册 · 教师端</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M27 5C13 5 6 13 6 24c0 1 .1 2 .2 2.8C7 27 8 27 9 27c11 0 18-9 18-22z' fill='%236b9e77'/%3E%3Cpath d='M8 26C13 18 19 12 25 8' stroke='%23fff' stroke-width='1.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body data-app="teacher">
+
+  <!-- 教师端 -->
+  <section id="view-teacher" class="view">
+    <header class="topbar">
+      <div class="brand">
+        <svg viewBox="0 0 32 32" width="26" height="26"><path d="M27 5C13 5 6 13 6 24c0 1 .1 2 .2 2.8C7 27 8 27 9 27c11 0 18-9 18-22z" fill="#6b9e77"/><path d="M8 26C13 18 19 12 25 8" stroke="#fff" stroke-width="1.4" fill="none" stroke-linecap="round"/></svg>
+        <span>本草画册 · 教师端</span>
+      </div>
+      <div class="topbar-right">
+        <button id="btn-settings" class="icon-btn" title="AI 设置">
+          <svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+        <a class="link-btn" href="index.html">返回首页</a>
+      </div>
+    </header>
+
+    <div class="tabs">
+      <button class="tab active" data-ttab="pending">作业批改 <span id="pending-count" class="tab-badge hidden">0</span></button>
+      <button class="tab" data-ttab="records">批改记录</button>
+    </div>
+
+    <main class="container wide">
+      <div id="ttab-pending" class="ttab">
+        <div id="teacher-pending-list"></div>
+      </div>
+      <div id="ttab-records" class="ttab hidden">
+        <div class="search-bar">
+          <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="11" cy="11" r="6" fill="none" stroke="#8a968e" stroke-width="1.8"/><path d="M16 16l4 4" stroke="#8a968e" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <input type="text" id="teacher-search" placeholder="按学生姓名搜索…">
+        </div>
+        <div id="teacher-records-list"></div>
+      </div>
+    </main>
+  </section>
+
+  <!-- AI 设置弹窗 -->
+  <div id="modal-settings" class="modal-mask hidden">
+    <div class="modal modal-lg">
+      <h3>AI 批改设置</h3>
+
+      <div class="field">
+        <label class="field-label">批改方式</label>
+        <div class="seg">
+          <button class="seg-btn" data-mode="mock">模拟批改（无需 Key，立即可用）</button>
+          <button class="seg-btn" data-mode="real">真实 AI 批改</button>
+        </div>
+      </div>
+
+      <div id="real-settings" class="hidden">
+        <div class="field">
+          <label class="field-label">AI 服务商</label>
+          <select id="select-provider" class="text-input">
+            <option value="zhipu">智谱 GLM · 视觉模型（推荐，GLM-4.6V-Flash 免费）</option>
+            <option value="qwen">通义千问 Qwen-VL（百炼平台）</option>
+            <option value="doubao">火山豆包 Doubao 视觉模型</option>
+            <option value="custom">自定义（OpenAI 兼容接口）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field-label">接口地址</label>
+          <input type="text" id="input-endpoint" class="text-input" placeholder="https://.../chat/completions">
+        </div>
+        <div class="field">
+          <label class="field-label">模型名称</label>
+          <input type="text" id="input-model" class="text-input" placeholder="glm-4.6v-flash">
+        </div>
+        <div class="field">
+          <label class="field-label">API Key</label>
+          <input type="password" id="input-apikey" class="text-input" placeholder="仅保存在本机浏览器中">
+        </div>
+        <div class="tips">
+          <p>· 智谱免费 Key 申请：<a href="https://bigmodel.cn/" target="_blank" rel="noopener">bigmodel.cn</a> → 注册后在「API Keys」页面创建，视觉模型 GLM-4.6V-Flash 目前免费。</p>
+          <p>· Key 仅保存在本浏览器本地，不会上传；更换电脑需重新填写。</p>
+          <p>· 若浏览器提示跨域（CORS）错误，可在接口地址处填写自己的中转代理地址。</p>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="btn-settings-cancel" class="btn btn-ghost">取消</button>
+        <button id="btn-settings-save" class="btn btn-primary">保存设置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 图片轻提示 -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="js/storage.js?v=9"></script>
+  <script src="js/ai.js?v=9"></script>
+  <script src="js/app.js?v=9"></script>
+</body>
+</html>
