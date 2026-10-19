@@ -35,6 +35,9 @@
       endpoint: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
       models: ['glm-4.6v-flash', 'glm-4.1v-thinking-flash', 'glm-4v-flash']
     },
+    // 浏览器直接调用 open.bigmodel.cn 会被跨域预检拦截（OPTIONS 无 CORS 头），
+    // 通过我们部署的边缘转发服务访问（API Key 仍只保存在使用者设备里）
+    ZHIPU_RELAY: 'https://bencao-ai.carolin485.deno.net/api/paas/v4/chat/completions',
     qwen: {
       endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
       models: ['qwen-vl-plus', 'qwen-vl-max']
@@ -1811,6 +1814,35 @@
   }
 
   function gradeReal(image, cfg) {
+    // 智谱官方接口不允许浏览器跨域调用，自动改走转发服务；
+    // 教师自定义过接口地址（含自建代理）时保持原样
+    var endpoint = cfg.endpoint;
+    if (cfg.provider === 'zhipu' && /^https:\/\/open\.bigmodel\.cn\//.test(endpoint)) {
+      endpoint = PROVIDERS.ZHIPU_RELAY;
+    }
+
+    function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+    // 仅对网络层失败（TypeError）做一次短暂重试，业务错误不重试
+    function postJSON(body) {
+      var doFetch = function () {
+        return fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + cfg.apiKey
+          },
+          body: JSON.stringify(body)
+        });
+      };
+      return doFetch().catch(function (e) {
+        if (e instanceof TypeError) {
+          return wait(2500).then(doFetch);
+        }
+        throw e;
+      });
+    }
+
     function attempt(model) {
       var body = {
         model: model,
@@ -1824,14 +1856,7 @@
         }]
       };
 
-      return fetch(cfg.endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + cfg.apiKey
-        },
-        body: JSON.stringify(body)
-      }).then(function (res) {
+      return postJSON(body).then(function (res) {
         return res.text().then(function (text) {
           var data;
           try { data = JSON.parse(text); }
@@ -1856,7 +1881,6 @@
 
     // 首选模型拥挤时：等 3 秒重试一次，仍拥挤则依次自动换
     // glm-4.6v（更便宜）、glm-4.5v
-    function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
     var fallbackModels = ['glm-4.6v', 'glm-4.5v'];
     function fallback(idx) {
       if (idx >= fallbackModels.length) {
@@ -1878,7 +1902,7 @@
       });
     }).catch(function (err) {
       if (err instanceof TypeError) {
-        throw new Error('无法连接接口：可能是网络问题，或浏览器跨域(CORS)限制，可尝试填写代理地址');
+        throw new Error('网络连接不稳定，没能连上批改服务，请确认设备已联网后点“重新批改”再试一次');
       }
       throw err;
     });
