@@ -88,13 +88,122 @@
     else if (ROLE === 'student' && refreshStudentView) refreshStudentView();
   }
 
-  function runGrading(sub) {
-    AI.grade(sub.image, Store.getAIConfig()).then(function (ev) {
-      Store.updateSubmission(sub.id, { aiStatus: 'done', ai: ev, working: null });
-    }, function (err) {
-      Store.updateSubmission(sub.id, { aiStatus: 'error', aiError: err.message || '批改失败' });
-    }).then(refreshAfterGrade);
+  /* =========================================================
+   * 自动批改队列
+   *  - 学生提交后作业进入队列；教师端打开期间自动认领、串行批改
+   *  - 刷新教师端、切走再切回、关闭后重开都不会“中断”：新页面自动从队列接着批
+   *  - 同设备多标签靠 gradeOwner + 心跳租约（45 秒）避免一份作业被重复批改
+   *  - 真实失败自动重试最多 MAX_AUTO_ATTEMPTS 次，之后才提示老师手动处理
+   * ========================================================= */
+  var TAB_ID = uid();
+  var MAX_AUTO_ATTEMPTS = 3;
+  var OWNER_TTL = 45000;   // 认领心跳超时：页面刷新/关闭后，新页面最多 45 秒接管
+  var queueRunning = false;
+  var waitTimer = null;
+  var beatTimer = null;
+
+  function pickQueued(list) {
+    return list.filter(function (s) {
+      return !s.publishedAt && (
+        s.aiStatus === 'grading' ||
+        (s.aiStatus === 'error' && (s.gradeAttempts || 0) < MAX_AUTO_ATTEMPTS)
+      );
+    }).sort(function (a, b) { return a.submittedAt - b.submittedAt; });
   }
+
+  // 队列只在教师端运行：学生端提交即归还设备（零等待、不产生 AI 调用），
+  // 老师打开教师端后由队列自动逐份批改
+  function kickGradingQueue() {
+    if (ROLE !== 'teacher' || queueRunning) return;
+    queueRunning = true;
+    queueLoop();
+  }
+
+  function queueLoop() {
+    // 先从 IndexedDB 读取最新状态（别的标签页可能已经认领/批完）
+    Store.reloadSubmissions().then(function (list) {
+      var cand = pickQueued(list)[0];
+      if (!cand) {
+        queueRunning = false;
+        refreshAfterGrade();
+        return;
+      }
+
+      var now = Date.now();
+      if (cand.gradeOwner && cand.gradeOwner !== TAB_ID &&
+        now - (cand.gradeBeat || 0) < OWNER_TTL) {
+        // 其他标签页正在批改这一份：稍等后再检查
+        queueRunning = false;
+        clearTimeout(waitTimer);
+        waitTimer = setTimeout(kickGradingQueue, 8000);
+        return;
+      }
+
+      var patch = { gradeOwner: TAB_ID, gradeBeat: now };
+      if (cand.aiStatus === 'error') { patch.aiStatus = 'grading'; patch.aiError = ''; }
+      Store.updateSubmission(cand.id, patch).then(function () {
+        refreshAfterGrade();
+        gradeOne(cand.id);
+      });
+    }).catch(function () {
+      queueRunning = false;
+      clearTimeout(waitTimer);
+      waitTimer = setTimeout(kickGradingQueue, 10000);
+    });
+  }
+
+  function gradeOne(id) {
+    var sub = Store.getSubmission(id);
+    if (!sub || sub.aiStatus !== 'grading') { queueLoop(); return; }
+
+    clearInterval(beatTimer);
+    beatTimer = setInterval(function () {
+      var cur = Store.getSubmission(id);
+      if (cur && cur.gradeOwner === TAB_ID) {
+        Store.updateSubmission(id, { gradeBeat: Date.now() });
+      }
+    }, 10000);
+
+    var gradePromise;
+    try {
+      gradePromise = AI.grade(sub.image, Store.getAIConfig());
+    } catch (e) {
+      gradePromise = Promise.reject(e);
+    }
+    gradePromise.then(function (ev) {
+      return Store.finishSubmission(id, {
+        aiStatus: 'done', ai: ev, working: null, aiError: '',
+        gradeOwner: '', gradeBeat: 0, gradeAttempts: 0
+      });
+    }, function (err) {
+      var cur = Store.getSubmission(id);
+      var attempts = ((cur && cur.gradeAttempts) || 0) + 1;
+      var msg = err && err.message ? err.message : '批改失败';
+      return Store.finishSubmission(id, {
+        aiStatus: 'error', aiError: msg,
+        gradeOwner: '', gradeBeat: 0, gradeAttempts: attempts
+      });
+    }).then(function () {
+      clearInterval(beatTimer);
+      refreshAfterGrade();
+      queueLoop();
+    });
+  }
+
+  // 页面切走（切标签 / 切学生端教师端）时释放认领，让另一页面立刻能接管
+  function releaseOwned() {
+    if (!Store.getSubmissions) return;
+    Store.getSubmissions().forEach(function (s) {
+      if (s.gradeOwner === TAB_ID) {
+        Store.updateSubmission(s.id, { gradeOwner: '', gradeBeat: 0 });
+      }
+    });
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) releaseOwned();
+    else kickGradingQueue();
+  });
+  window.addEventListener('pagehide', releaseOwned);
 
   /* =========================================================
    * 学生端
@@ -177,25 +286,35 @@
     });
 
     $('#btn-submit').addEventListener('click', function () {
-      if (!pendingImage) return;
-      var name = Store.getStudentName();
-      if (!name) { openNameModal(); return; }
       var btn = $('#btn-submit');
+      var className = $('#input-class').value.trim();
+      var name = $('#input-stu-name').value.trim();
+
+      if (!pendingImage) { toast('请先拍照或选择作品照片'); return; }
+      if (!className) { toast('请填写班级'); $('#input-class').focus(); return; }
+      if (!name) { toast('请填写姓名'); $('#input-stu-name').focus(); return; }
+
       btn.disabled = true;
 
       function buildSub(image) {
         return {
           id: uid(),
+          className: className,
           studentName: name,
           image: image,
           submittedAt: Date.now(),
           aiStatus: 'grading',
           aiError: '',
+          gradeAttempts: 0,
           ai: null,
           working: null,
           publishedAt: null
         };
       }
+
+      // 记住本次班级/姓名，仅用于下一位同学提交时的预填（每次仍可修改、必须确认）
+      Store.setStudentClass(className);
+      Store.setStudentName(name);
 
       // IndexedDB 容量足以存整班作业；极端情况下保存失败再缩小一档重试
       var sub = buildSub(pendingImage);
@@ -206,7 +325,7 @@
         });
       }).then(function (saved) {
         setPreview('');
-        toast('提交成功，AI 正在批改…');
+        toast('提交成功，AI 会自动批改，可继续下一位同学');
 
         // 切到“我的记录”
         document.querySelectorAll('[data-stab]').forEach(function (b) {
@@ -216,17 +335,24 @@
         $('#stab-records').classList.remove('hidden');
         renderStudentRecords();
 
-        runGrading(saved);
+        // 交给自动批改队列（刷新页面也不影响，教师端打开时会自动接管）
+        kickGradingQueue();
       }, function () {
         btn.disabled = false;
         toast('作业保存失败，请重试');
       });
     });
 
-    /* 我的记录（只展示已发布评语） */
+    /* 我的记录（只展示当前姓名学生的作业与已发布评语） */
     function renderStudentRecords() {
-      var name = Store.getStudentName();
+      var name = ($('#input-stu-name').value || '').trim();
       var box = $('#student-records-list');
+
+      if (!name) {
+        box.innerHTML = emptyHTML('请先填写姓名', '在「作业提交」页填写班级和姓名后，就能在这里查看你的作业状态');
+        return;
+      }
+
       var list = Store.getSubmissions()
         .filter(function (s) { return s.studentName === name; })
         .sort(function (a, b) { return b.submittedAt - a.submittedAt; });
@@ -241,11 +367,11 @@
 
         if (s.aiStatus === 'grading') {
           badge = '<span class="badge grading"><span class="dot-flash">AI 批改中…</span></span>';
-          body = '<div class="status-note"><span class="badge grading">●</span>AI 正在分析画面，请稍等片刻…</div>';
+          body = '<div class="status-note"><span class="badge grading">●</span>AI 正在自动分析画面，请稍等片刻，无需手动操作。</div>';
           toggle = '查看状态';
         } else if (s.aiStatus === 'error') {
           badge = '<span class="badge error">批改遇到问题</span>';
-          body = '<div class="status-note"><span class="badge error">●</span>本次批改未成功，老师会重新发起批改，请耐心等待。</div>';
+          body = '<div class="status-note"><span class="badge error">●</span>本次批改未成功，系统会自动重新批改，请耐心等待。</div>';
           toggle = '查看状态';
         } else if (!s.publishedAt) {
           badge = '<span class="badge reviewing">教师审阅中</span>';
@@ -260,7 +386,7 @@
         return '<div class="record-card" data-id="' + s.id + '">' +
           '<div class="record-head">' +
           '<img class="record-thumb" src="' + s.image + '" alt="缩略图">' +
-          '<div class="record-meta"><div class="t1">本草画册内页</div>' +
+          '<div class="record-meta"><div class="t1">' + esc(s.className ? s.className + ' · ' + s.studentName : '本草画册内页') + '</div>' +
           '<div class="t2">提交于 ' + fmtTime(s.submittedAt) + '</div></div>' +
           badge +
           '<button class="record-toggle" data-toggle>' + toggle + '</button>' +
@@ -286,42 +412,16 @@
       }
     });
 
-    /* 学生姓名弹窗 */
-    function openNameModal() {
-      var modal = $('#modal-name');
-      var input = $('#input-name');
-      input.value = Store.getStudentName();
-      modal.classList.remove('hidden');
-      setTimeout(function () { input.focus(); }, 50);
-    }
-
-    function confirmName() {
-      var v = $('#input-name').value.trim();
-      if (!v) { toast('请输入姓名'); return; }
-      Store.setStudentName(v);
-      $('#modal-name').classList.add('hidden');
-      enterStudent();
-    }
-
-    $('#btn-name-ok').addEventListener('click', confirmName);
-    $('#input-name').addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') confirmName();
-    });
-
-    /* 进入学生端：显示姓名、加载记录 */
-    function enterStudent() {
-      $('#student-name-label').textContent = Store.getStudentName();
-      renderStudentRecords();
-    }
+    /* 班级 / 姓名：每次提交都要填写，自动预填上次内容方便连续提交 */
+    $('#input-class').value = Store.getStudentClass();
+    $('#input-stu-name').value = Store.getStudentName();
 
     renderRubric();
 
-    // 注册给顶层批改流程使用
+    // 注册给顶层批改流程使用（学生端只展示状态，批改由教师端队列进行）
     refreshStudentView = function () { renderStudentRecords(); };
 
-    // 未登记姓名：先弹窗；已登记：直接进入
-    if (!Store.getStudentName()) openNameModal();
-    else enterStudent();
+    renderStudentRecords();
   }
 
   /* =========================================================
@@ -368,25 +468,36 @@
         (selected === AI.COMPOSITION_NONE ? ' selected' : '') + '>' + esc(AI.COMPOSITION_NONE) + '</option>';
     }
 
+    function nameLine(sub) {
+      return esc(sub.className ? sub.className + ' · ' + sub.studentName : sub.studentName);
+    }
+
     function gradeCardHTML(sub) {
       var w = ensureWorking(sub);
 
       if (sub.aiStatus === 'grading') {
-        return '<div class="grade-card" data-id="' + sub.id + '"><div class="grade-head">' +
+        return '<div class="grade-card" data-id="' + sub.id + '" data-status="grading"><div class="grade-head">' +
           '<img class="record-thumb" src="' + sub.image + '">' +
-          '<div class="gm"><div class="n">' + esc(sub.studentName) + '</div>' +
+          '<div class="gm"><div class="n">' + nameLine(sub) + '</div>' +
           '<div class="t">提交于 ' + fmtTime(sub.submittedAt) + '</div></div>' +
-          '<span class="badge grading"><span class="dot-flash">AI 批改中…</span></span></div></div>';
+          '<span class="badge grading"><span class="dot-flash">AI 批改中…</span></span></div>' +
+          '<div class="auto-note">AI 正在自动批改，无需手动操作；刷新页面或切换到其他页面也会自动继续。</div></div>';
       }
 
       if (sub.aiStatus === 'error') {
-        return '<div class="grade-card" data-id="' + sub.id + '"><div class="grade-head">' +
+        var attempts = sub.gradeAttempts || 0;
+        var stopped = attempts >= MAX_AUTO_ATTEMPTS;
+        var box = stopped
+          ? '<div class="error-box"><span>' + esc(sub.aiError || '未知错误') + '</span>' +
+            '<button class="btn btn-outline btn-sm" data-action="retry">重新批改</button></div>'
+          : '<div class="auto-note">本次批改遇到网络波动，系统正在自动重试，请稍候…</div>';
+        return '<div class="grade-card" data-id="' + sub.id + '" data-status="error"><div class="grade-head">' +
           '<img class="record-thumb" src="' + sub.image + '">' +
-          '<div class="gm"><div class="n">' + esc(sub.studentName) + '</div>' +
+          '<div class="gm"><div class="n">' + nameLine(sub) + '</div>' +
           '<div class="t">提交于 ' + fmtTime(sub.submittedAt) + '</div></div>' +
-          '<span class="badge error">批改失败</span></div>' +
-          '<div class="error-box"><span>' + esc(sub.aiError || '未知错误') + '</span>' +
-          '<button class="btn btn-outline btn-sm" data-action="retry">重新批改</button></div></div>';
+          '<span class="badge ' + (stopped ? 'error' : 'grading') + '">' +
+          (stopped ? '批改失败' : '<span class="dot-flash">等待自动重试…</span>') + '</span></div>' +
+          box + '</div>';
       }
 
       var dimRows = w.dimensions.map(function (d) {
@@ -417,10 +528,10 @@
           '</div>';
       }).join('');
 
-      return '<div class="grade-card" data-id="' + sub.id + '">' +
+      return '<div class="grade-card" data-id="' + sub.id + '" data-status="done">' +
         '<div class="grade-head">' +
         '<img class="record-thumb" src="' + sub.image + '">' +
-        '<div class="gm"><div class="n">' + esc(sub.studentName) + '</div>' +
+        '<div class="gm"><div class="n">' + nameLine(sub) + '</div>' +
         '<div class="t">提交于 ' + fmtTime(sub.submittedAt) + '</div></div>' +
         '<span class="badge reviewing">待发布</span></div>' +
         '<div class="grade-grid">' +
@@ -467,6 +578,58 @@
         return;
       }
       box.innerHTML = list.map(gradeCardHTML).join('');
+    }
+
+    /* 队列后台批改时的增量刷新：只替换状态变化的卡片、插入新到的作业，
+       不整体重绘，避免打断老师正在输入的评语 */
+    function syncTeacherPending() {
+      var box = $('#teacher-pending-list');
+      var list = Store.getSubmissions()
+        .filter(function (s) { return !s.publishedAt; })
+        .sort(function (a, b) { return a.submittedAt - b.submittedAt; });
+
+      var badge = $('#pending-count');
+      badge.textContent = list.length;
+      badge.classList.toggle('hidden', list.length === 0);
+
+      if (!list.length) {
+        box.innerHTML = emptyHTML('暂时没有待批改的作业', '学生提交后会自动出现在这里');
+        return;
+      }
+      if (!box.querySelector('.grade-card')) {
+        box.innerHTML = list.map(gradeCardHTML).join(''); // 空状态占位 → 首次全量
+        return;
+      }
+
+      // 状态变化的卡片原地替换（grading/error 卡片没有输入框，不会打断编辑）
+      list.forEach(function (sub) {
+        var card = box.querySelector('.grade-card[data-id="' + sub.id + '"]');
+        if (card && card.dataset.status !== sub.aiStatus) {
+          card.outerHTML = gradeCardHTML(sub);
+        }
+      });
+
+      // 新提交的作业按时间序插入，不动其他卡片
+      list.forEach(function (sub) {
+        if (box.querySelector('.grade-card[data-id="' + sub.id + '"]')) return;
+        var html = gradeCardHTML(sub);
+        var inserted = false;
+        box.querySelectorAll('.grade-card').forEach(function (card) {
+          if (inserted) return;
+          var other = Store.getSubmission(card.dataset.id);
+          if (other && other.submittedAt > sub.submittedAt) {
+            card.insertAdjacentHTML('beforebegin', html);
+            inserted = true;
+          }
+        });
+        if (!inserted) box.insertAdjacentHTML('beforeend', html);
+      });
+
+      // 已发布或被删除的卡片移除
+      box.querySelectorAll('.grade-card').forEach(function (card) {
+        var still = Store.getSubmission(card.dataset.id);
+        if (!still || still.publishedAt) card.remove();
+      });
     }
 
     /* 批改卡：文本编辑实时写入并立即持久化（否则重新读取会丢失改动） */
@@ -531,10 +694,13 @@
 
       if (action === 'retry') {
         var targetId = card.dataset.id;
-        Store.updateSubmission(targetId, { aiStatus: 'grading', aiError: '' });
-        var fresh = Store.getSubmission(targetId);
-        renderTeacherPending();
-        runGrading(fresh);
+        Store.updateSubmission(targetId, {
+          aiStatus: 'grading', aiError: '',
+          gradeAttempts: 0, gradeOwner: '', gradeBeat: 0
+        }).then(function () {
+          renderTeacherPending();
+          kickGradingQueue();
+        });
         return;
       }
 
@@ -560,25 +726,28 @@
         w.suggestions = w.suggestions.map(function (s) { return String(s).trim(); }).filter(Boolean);
         if (!w.suggestions.length) { toast('请至少保留一条优化建议'); return; }
         Store.updateSubmission(sub.id, { working: w, publishedAt: Date.now() });
-        toast('评语已发布给 ' + sub.studentName);
+        toast('评语已发布给 ' + (sub.className ? sub.className + ' ' : '') + sub.studentName);
         renderTeacherPending();
         renderTeacherRecords();
       }
     });
 
-    /* 批改记录（全部学生，只读，可搜索） */
+    /* 批改记录（全部学生，只读，可按班级或姓名搜索） */
     function renderTeacherRecords() {
       var q = $('#teacher-search').value.trim();
       var box = $('#teacher-records-list');
       var list = Store.getSubmissions()
         .filter(function (s) { return s.publishedAt; })
-        .filter(function (s) { return !q || s.studentName.indexOf(q) >= 0; })
+        .filter(function (s) {
+          return !q || s.studentName.indexOf(q) >= 0 ||
+            (s.className || '').indexOf(q) >= 0;
+        })
         .sort(function (a, b) { return b.publishedAt - a.publishedAt; });
 
       if (!list.length) {
         box.innerHTML = emptyHTML(
           q ? '没有找到匹配的学生记录' : '还没有已发布的批改记录',
-          q ? '换个姓名试试' : '在「作业批改」中发布评语后会显示在这里'
+          q ? '换个班级或姓名试试' : '在「作业批改」中发布评语后会显示在这里'
         );
         return;
       }
@@ -586,7 +755,7 @@
       box.innerHTML = list.map(function (s) {
         return '<div class="grade-card" data-id="' + s.id + '"><div class="grade-head">' +
           '<img class="record-thumb" src="' + s.image + '">' +
-          '<div class="gm"><div class="n">' + esc(s.studentName) + '</div>' +
+          '<div class="gm"><div class="n">' + nameLine(s) + '</div>' +
           '<div class="t">提交 ' + fmtTime(s.submittedAt) + ' ｜ 发布 ' + fmtTime(s.publishedAt) + '</div></div>' +
           '<span class="badge published">已发布</span>' +
           '<button class="link-btn danger record-del" data-action="record-del">删除</button></div>' +
@@ -604,7 +773,7 @@
       var card = btn.closest('.grade-card');
       var sub = Store.getSubmission(card.dataset.id);
       if (!sub) return;
-      if (window.confirm('确定删除 ' + sub.studentName + ' 的这份作业和评语吗？删除后无法恢复。')) {
+      if (window.confirm('确定删除 ' + (sub.className ? sub.className + ' ' : '') + sub.studentName + ' 的这份作业和评语吗？删除后无法恢复。')) {
         Store.deleteSubmission(sub.id);
         renderTeacherRecords();
         toast('已删除');
@@ -668,26 +837,45 @@
       Store.setAIConfig(cfg);
       $('#modal-settings').classList.add('hidden');
       toast(cfg.mode === 'real' ? '已切换为真实 AI 批改' : '已保存：模拟批改模式');
+
+      // 保存设置后，让之前批改失败的作业重新进入队列（可能刚修好 Key / 切换了模式）
+      var hasRetry = false;
+      Store.getSubmissions().forEach(function (s) {
+        if (!s.publishedAt && s.aiStatus === 'error') {
+          hasRetry = true;
+          Store.updateSubmission(s.id, {
+            aiStatus: 'grading', aiError: '',
+            gradeAttempts: 0, gradeOwner: '', gradeBeat: 0
+          });
+        }
+      });
+      if (hasRetry) {
+        renderTeacherPending();
+        kickGradingQueue();
+      }
     });
 
-    // 注册给顶层批改流程使用（含“重新批改”完成后的界面刷新）
+    // 队列后台批改时：批改页用增量刷新（不打断评语编辑），记录页保持原样
     refreshTeacherView = function () {
-      renderTeacherPending();
-      renderTeacherRecords();
+      if (!$('#ttab-pending').classList.contains('hidden')) syncTeacherPending();
     };
-    refreshTeacherView();
+    // 首次进入全量渲染，并自动接管队列
+    renderTeacherPending();
+    renderTeacherRecords();
+    kickGradingQueue();
   }
 
   /* =========================================================
    * 公共初始化
    * ========================================================= */
-  function recoverInterrupted() {
-    // 刷新/重新打开页面后，批改中的任务视为中断（教师可重新批改）
+  function migrateInterrupted() {
+    // 旧版本会把刷新时批改中的作业标成“批改中断”错误；
+    // 现在这些作业直接回到队列，由自动批改流程接着处理
     Store.getSubmissions().forEach(function (s) {
-      if (s.aiStatus === 'grading') {
+      if (s.aiStatus === 'error' && s.gradeAttempts == null) {
         Store.updateSubmission(s.id, {
-          aiStatus: 'error',
-          aiError: '批改中断（页面被关闭或刷新），请重新批改'
+          aiStatus: 'grading', aiError: '',
+          gradeAttempts: 0, gradeOwner: '', gradeBeat: 0
         });
       }
     });
@@ -695,9 +883,12 @@
 
   // 先打开本地存储（含旧数据迁移），再启动页面
   Store.bootstrap().then(function () {
-    recoverInterrupted();
+    migrateInterrupted();
     if (ROLE === 'student') initStudent();
     else if (ROLE === 'teacher') initTeacher();
+    // 兜底：即使学生在另一标签页刚提交，本页面也能在 20 秒内发现并批改
+    kickGradingQueue();
+    setInterval(kickGradingQueue, 20000);
   }).catch(function (err) {
     document.body.insertAdjacentHTML('beforeend',
       '<div style="padding:24px;color:#b04a3a">本地存储无法使用：' +

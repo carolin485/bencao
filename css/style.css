@@ -235,6 +235,18 @@ a { color: var(--green-deep); }
 
 .upload-actions { display: flex; gap: 10px; margin: 14px 0; }
 
+/* 班级 + 姓名：每次提交必填，并排显示，窄屏堆叠 */
+.student-fields { display: flex; gap: 10px; margin: 4px 0 14px; }
+.student-fields .text-input { flex: 1; min-width: 0; font-size: 15px; }
+
+/* 自动批改提示：温和的灰绿色说明文字，不使用报错底色 */
+.auto-note {
+  padding: 10px 16px 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
 /* ========== 按钮 ========== */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
@@ -581,4 +593,8 @@ a { color: var(--green-deep); }
 @media (max-width: 400px) {
   .dim-edit { grid-template-columns: 1fr 78px; grid-auto-rows: auto; }
   .dim-edit .dn { grid-column: 1 / -1; }
+}
+
+@media (max-width: 560px) {
+  .student-fields { flex-direction: column; }
 }

@@ -7,6 +7,7 @@
   'use strict';
 
   var KEY_NAME = 'bc_student_name';
+  var KEY_CLASS = 'bc_student_class';
   var KEY_CONFIG = 'bc_ai_config';
   var KEY_SUBS = 'bc_submissions'; // 旧版 localStorage 作业（仅用于一次性迁移）
 
@@ -27,12 +28,18 @@
     localStorage.setItem(key, JSON.stringify(value));
   }
 
-  /* ---------- 学生姓名 ---------- */
+  /* ---------- 学生班级 / 姓名（仅作下次提交的预填，不锁定身份） ---------- */
   function getStudentName() {
     return localStorage.getItem(KEY_NAME) || '';
   }
   function setStudentName(name) {
     localStorage.setItem(KEY_NAME, name);
+  }
+  function getStudentClass() {
+    return localStorage.getItem(KEY_CLASS) || '';
+  }
+  function setStudentClass(cls) {
+    localStorage.setItem(KEY_CLASS, cls);
   }
 
   /* ---------- AI 配置 ---------- */
@@ -126,6 +133,10 @@
   function getSubmissions() {
     return memSubs || [];
   }
+  /* 从 IndexedDB 重新全量读取（多个标签页同时打开时，用于拿到别的标签写入的最新状态） */
+  function reloadSubmissions() {
+    return idbGetAll().then(function (list) { memSubs = list; return list; });
+  }
   function getSubmission(id) {
     var list = memSubs || [];
     for (var i = 0; i < list.length; i++) {
@@ -154,6 +165,41 @@
     });
     if (!target) return Promise.resolve(null);
     return idbPut(target).then(function () { return target; });
+  }
+
+  /* 批改结果写回：若该作业已被其他页面批完（aiStatus=done），绝不覆盖。
+     防止同一台设备两个标签页同时批改同一份作业时互相冲掉结果。 */
+  function finishSubmission(id, patch) {
+    return new Promise(function (resolve, reject) {
+      var tx = idb.transaction(STORE, 'readwrite');
+      var store = tx.objectStore(STORE);
+      var getReq = store.get(id);
+      getReq.onsuccess = function () {
+        var cur = getReq.result;
+        if (!cur) { resolve(null); return; }
+        if (cur.aiStatus === 'done') {
+          // 同步内存缓存（可能是别的标签页刚写完的结果）
+          memSubs.forEach(function (s, i) { if (s.id === id) memSubs[i] = cur; });
+          resolve(cur);
+          return;
+        }
+        for (var k in patch) {
+          if (Object.prototype.hasOwnProperty.call(patch, k)) cur[k] = patch[k];
+        }
+        store.put(cur);
+        memSubs.forEach(function (s) {
+          if (s.id === id) {
+            for (var k2 in patch) {
+              if (Object.prototype.hasOwnProperty.call(patch, k2)) s[k2] = patch[k2];
+            }
+          }
+        });
+      };
+      getReq.onerror = function () { reject(getReq.error); };
+      tx.oncomplete = function () { resolve(getReq.result); };
+      tx.onerror = function () { reject(tx.error); };
+      tx.onabort = function () { reject(tx.error); };
+    });
   }
 
   /* ---------- 图片压缩 ----------
@@ -223,13 +269,17 @@
     bootstrap: bootstrap,
     getStudentName: getStudentName,
     setStudentName: setStudentName,
+    getStudentClass: getStudentClass,
+    setStudentClass: setStudentClass,
     getAIConfig: getAIConfig,
     setAIConfig: setAIConfig,
     getSubmissions: getSubmissions,
+    reloadSubmissions: reloadSubmissions,
     addSubmission: addSubmission,
     deleteSubmission: deleteSubmission,
     getSubmission: getSubmission,
     updateSubmission: updateSubmission,
+    finishSubmission: finishSubmission,
     compressImage: compressImage,
     recompressDataURL: recompressDataURL
   };

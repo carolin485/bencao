@@ -1126,13 +1126,13 @@
   /* 闪光点：只报告画面里真实检测到的东西，没有就不夸 */
   function extractHighlights(f, comp, ev) {
     var h = {
-      collage: f.paperKinds >= 2,
-      seal: !!f.seal,
-      frame: !!f.frame,
-      title: !!ev.hasTitle,
-      textRich: ev.textCorners >= 3,
-      darkPaper: f.darkPaperRatio >= 0.18,
-      multiHue: f.hueKinds >= 4
+      collage: !!f && f.paperKinds >= 2,
+      seal: !!f && !!f.seal,
+      frame: !!f && !!f.frame,
+      title: !!ev && ev.hasTitle,
+      textRich: !!ev && ev.textCorners >= 3,
+      darkPaper: !!f && f.darkPaperRatio >= 0.18,
+      multiHue: !!f && f.hueKinds >= 4
     };
     h.keys = Object.keys(h).filter(function (k) { return h[k] === true; });
     h.count = h.keys.length;
@@ -1223,14 +1223,14 @@
     }
     if (level === '良好') {
       // 色彩饱满又没有重色证据：不存在“涂改/颜色重”，不能用通用模板
-      if (f.colorRatio >= 0.15 && f.heavyColorRatio < 0.1) {
+      if (f && f.colorRatio >= 0.15 && f.heavyColorRatio < 0.1) {
         return '勾线流畅肯定，淡彩通透干净，叶片的绿色层次和花朵的清淡点染都处理得很好。';
       }
       return pickRandom(MOCK_COMMENTS.technique['良好']);
     }
     if (level === '合格') {
       // 没有重色糊线证据：不说“盖住勾线”，先肯定再给小建议
-      if (f.heavyColorRatio < 0.17) {
+      if (!f || f.heavyColorRatio < 0.17) {
         return '勾线和上色都已完成，颜色比较均匀；建议下次上色时笔尖多蘸一点清水、薄薄地铺，颜色会更透明，线条也会更清楚。';
       }
       return pickRandom(MOCK_COMMENTS.technique['合格']);
@@ -1665,10 +1665,11 @@
         function () { return buildObservedResult(null); }
       );
     } else {
-      work = Promise.resolve(buildObservedResult(null));
+      work = Promise.resolve().then(function () { return buildObservedResult(null); });
     }
-    return new Promise(function (resolve) {
-      work.then(function (result) {
+    // 分析或组装意外出错时必须 reject（交给队列重试），不能让 Promise 永久挂起
+    return work.then(function (result) {
+      return new Promise(function (resolve) {
         setTimeout(function () { resolve(result); }, delay);
       });
     });
